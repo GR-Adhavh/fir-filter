@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FIR Window & Fourier Transform Calculator</title>
+<style>
+    *{box-sizing:border-box}
+    body{
+        margin:0;
+        font-family:Arial,Helvetica,sans-serif;
+        background:#f3f6fa;
+        color:#222;
+    }
+    .container{
+        max-width:1050px;
+        margin:30px auto;
+        padding:20px;
+    }
+    .card{
+        background:white;
+        border-radius:12px;
+        padding:22px;
+        margin-bottom:18px;
+        box-shadow:0 3px 14px rgba(0,0,0,.08);
+    }
+    h1{margin:0 0 8px;text-align:center}
+    h2{margin-top:0}
+    .subtitle{text-align:center;color:#666;margin-bottom:22px}
+    .grid{
+        display:grid;
+        grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
+        gap:15px;
+    }
+    label{font-weight:bold;display:block;margin-bottom:6px}
+    input,select,button{
+        font:inherit;
+    }
+    input,select{
+        width:100%;
+        padding:10px;
+        border:1px solid #bbb;
+        border-radius:7px;
+        background:white;
+    }
+    button{
+        border:0;
+        border-radius:7px;
+        padding:10px 15px;
+        cursor:pointer;
+        font-weight:bold;
+    }
+    .primary{background:#2196F3;color:white;width:100%;margin-top:15px}
+    .add{background:#e9eef5}
+    .remove{background:#ffe5e5;color:#c00;padding:8px 11px}
+    .piece{
+        display:grid;
+        grid-template-columns:1fr 1fr auto;
+        gap:10px;
+        align-items:end;
+        padding:12px;
+        margin-bottom:10px;
+        background:#f8f9fb;
+        border-radius:8px;
+    }
+    .piece small{display:block;color:#666;margin-bottom:4px}
+    .table-wrap{overflow-x:auto}
+    table{border-collapse:collapse;width:100%;margin-top:10px}
+    th,td{padding:9px;text-align:right;border-bottom:1px solid #ddd}
+    th{background:#eef3f8}
+    th:first-child,td:first-child{text-align:center}
+    pre{
+        white-space:pre-wrap;
+        word-break:break-word;
+        background:#f5f5f5;
+        padding:14px;
+        border-radius:7px;
+        overflow:auto;
+    }
+    .error{color:#b00020;font-weight:bold;margin-top:10px}
+    .success{color:#167a3b;font-weight:bold}
+    @media(max-width:650px){
+        .piece{grid-template-columns:1fr}
+    }
+</style>
+</head>
+<body>
+<div class="container">
+    <div class="card">
+        <h1>FIR Window & Fourier Transform Calculator</h1>
+
+        <div class="grid">
+            <div>
+                <label for="window">Choose Window</label>
+                <select id="window">
+                    <option value="1">Rectangular Window</option>
+                    <option value="2">Hamming Window</option>
+                    <option value="3">Hanning Window</option>
+                    <option value="4">Blackman Window</option>
+                    <option value="5">Bartlett / Triangular Window</option>
+                </select>
+            </div>
+            <div>
+                <label for="N">N (≥ 2)</label>
+                <input id="N" type="number" min="2" value="11">
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Define Hd(e<sup>jω</sup>)</h2>
+        <div id="pieces"></div>
+        <button class="add" onclick="addPiece()">+ Add Another Range/Piece</button>
+        <button class="primary" onclick="calculate()">Calculate FIR Filter transfer Function</button>
+        <div id="error" class="error"></div>
+    </div>
+
+    <div class="card" id="results" style="display:none">
+        <h2>Results</h2>
+        <div id="table"></div>
+
+        <h3>Z-transform</h3>
+        <pre id="ztransform"></pre>
+
+        <h3>Linear-phase form</h3>
+        <pre id="linearphase"></pre>
+    </div>
+</div>
+
+<script>
+const piecesDiv = document.getElementById("pieces");
+
+function addPiece(expr="exp(-1j * w * alpha)", range=""){
+    const div=document.createElement("div");
+    div.className="piece";
+    div.innerHTML=`
+        <div>
+            <small>Expression</small>
+            <input class="expr" value="${escapeAttr(expr)}">
+        </div>
+        <div>
+            <small>For range</small>
+            <input class="range" value="${escapeAttr(range)}" placeholder="-pi/4 <= w <= pi/4">
+        </div>
+        <button class="remove" onclick="this.parentElement.remove()">X</button>
+    `;
+    piecesDiv.appendChild(div);
+}
+function escapeAttr(s){
+    return String(s).replace(/&/g,"&amp;").replace(/"/g,"&quot;")
+                    .replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+addPiece("exp(-j*w*alpha)", "-pi <= w <= -pi/2");
+addPiece("exp(-j*w*alpha)", "pi/2 <= w <= pi");
+
+function parseRange(s){
+    const m=s.trim().match(/^\s*(.+?)\s*(?:<=|<)\s*w\s*(?:<=|<)\s*(.+?)\s*$/i);
+    if(!m) throw new Error("Range must look like: -2 <= w <= -1");
+    return [evalNumber(m[1]),evalNumber(m[2])];
+}
+
+function evalNumber(s){
+    s=s.trim().replace(/\bpi\b/gi,"Math.PI");
+    if(!/^[0-9+\-*/().\sMathPI]+$/.test(s))
+        throw new Error("Invalid range value: "+s);
+    return Function('"use strict"; return ('+s+')')();
+}
+
+/* Supports common expressions used in the original Python program.
+   Complex numbers are represented as {re,im}. */
+function C(re,im=0){return {re:re,im:im}}
+function add(a,b){return C(a.re+b.re,a.im+b.im)}
+function mul(a,b){return C(a.re*b.re-a.im*b.im,a.re*b.im+a.im*b.re)}
+function expC(a){
+    const e=Math.exp(a.re);
+    return C(e*Math.cos(a.im),e*Math.sin(a.im));
+}
+
+/* Convert a user expression into a function of w and alpha.
+   Full complex-number parser: supports + - * / ^ ( ), numbers, j (or 2j),
+   w, alpha, pi, and exp() cos() sin().  Examples:
+   exp(-j*2*w)   exp(3*j*w)   exp(-j*w*alpha)   1   2*cos(w)   -j   */
+function cadd(a,b){return C(a.re+b.re,a.im+b.im)}
+function csub(a,b){return C(a.re-b.re,a.im-b.im)}
+function cdiv(a,b){
+    const d=b.re*b.re+b.im*b.im;
+    if(d===0) throw new Error("Division by zero in expression.");
+    return C((a.re*b.re+a.im*b.im)/d,(a.im*b.re-a.re*b.im)/d);
+}
+function cpow(a,b){
+    if(a.re===0&&a.im===0) return C(0,0);
+    const r=Math.hypot(a.re,a.im), th=Math.atan2(a.im,a.re);
+    const lnr=Math.log(r);
+    return expC(C(b.re*lnr-b.im*th, b.im*lnr+b.re*th));
+}
+function ccos(a){return C(Math.cos(a.re)*Math.cosh(a.im), -Math.sin(a.re)*Math.sinh(a.im))}
+function csin(a){return C(Math.sin(a.re)*Math.cosh(a.im), Math.cos(a.re)*Math.sinh(a.im))}
+
+function tokenize(s){
+    const toks=[]; let i=0;
+    while(i<s.length){
+        const ch=s[i];
+        if(/\s/.test(ch)){i++;continue;}
+        let m=s.slice(i).match(/^(\d+\.?\d*|\.\d+)(e[+-]?\d+)?/i);
+        if(m){
+            i+=m[0].length;
+            let imag=false;
+            if((s[i]==="j"||s[i]==="J") && !/[a-zA-Z_0-9]/.test(s[i+1]||"")){imag=true;i++;}
+            toks.push({t:"num",v:parseFloat(m[0]),imag});
+            continue;
+        }
+        m=s.slice(i).match(/^[a-zA-Z_][a-zA-Z_0-9]*/);
+        if(m){toks.push({t:"id",v:m[0].toLowerCase()});i+=m[0].length;continue;}
+        if(s.startsWith("**",i)){toks.push({t:"op",v:"^"});i+=2;continue;}
+        if("+-*/^()".includes(ch)){toks.push({t:"op",v:ch});i++;continue;}
+        throw new Error("Unsupported character in expression: "+ch);
+    }
+    return toks;
+}
+
+function makeExpr(expr,alpha){
+    const src=expr.trim();
+    if(!src) throw new Error("Expression cannot be empty.");
+    const toks=tokenize(src);
+    let pos=0;
+    const peek=()=>toks[pos];
+    const isOp=v=>peek()&&peek().t==="op"&&peek().v===v;
+
+    function parseExpr(){
+        let left=parseTerm();
+        while(isOp("+")||isOp("-")){
+            const op=toks[pos++].v, right=parseTerm(), l=left;
+            left= op==="+" ? (env=>cadd(l(env),right(env))) : (env=>csub(l(env),right(env)));
+        }
+        return left;
+    }
+    function parseTerm(){
+        let left=parseUnary();
+        while(isOp("*")||isOp("/")){
+            const op=toks[pos++].v, right=parseUnary(), l=left;
+            left= op==="*" ? (env=>mul(l(env),right(env))) : (env=>cdiv(l(env),right(env)));
+        }
+        return left;
+    }
+    function parseUnary(){
+        if(isOp("-")){pos++;const f=parseUnary();return env=>{const v=f(env);return C(-v.re,-v.im)};}
+        if(isOp("+")){pos++;return parseUnary();}
+        return parsePower();
+    }
+    function parsePower(){
+        const base=parseAtom();
+        if(isOp("^")){pos++;const ex=parseUnary();return env=>cpow(base(env),ex(env));}
+        return base;
+    }
+    function parseAtom(){
+        const tk=toks[pos++];
+        if(!tk) throw new Error("Unexpected end of expression.");
+        if(tk.t==="num") return tk.imag ? (()=>C(0,tk.v)) : (()=>C(tk.v,0));
+        if(tk.t==="op"&&tk.v==="("){
+            const f=parseExpr();
+            if(!isOp(")")) throw new Error("Missing ) in expression.");
+            pos++; return f;
+        }
+        if(tk.t==="id"){
+            if(tk.v==="j") return ()=>C(0,1);
+            if(tk.v==="w") return env=>C(env.w,0);
+            if(tk.v==="alpha") return ()=>C(alpha,0);
+            if(tk.v==="pi") return ()=>C(Math.PI,0);
+            const fn={exp:expC,cos:ccos,sin:csin}[tk.v];
+            if(fn){
+                if(!isOp("(")) throw new Error("Expected ( after "+tk.v);
+                pos++;
+                const arg=parseExpr();
+                if(!isOp(")")) throw new Error("Missing ) in expression.");
+                pos++;
+                return env=>fn(arg(env));
+            }
+            throw new Error("Unknown name in expression: "+tk.v);
+        }
+        throw new Error("Unexpected token in expression: "+tk.v);
+    }
+
+    const f=parseExpr();
+    if(pos<toks.length) throw new Error("Could not read expression near: "+toks[pos].v);
+    return function(w){return f({w:w});};
+}
+
+function integrateComplex(f,a,b,steps=2000){
+    if(a===b)return C(0,0);
+    if(steps%2)steps++;
+    const h=(b-a)/steps;
+    let sum=C(0,0);
+    for(let k=0;k<=steps;k++){
+        const x=a+k*h;
+        const v=f(x);
+        const factor=(k===0||k===steps)?1:(k%2===0?2:4);
+        sum=add(sum,C(v.re*factor,v.im*factor));
+    }
+    return C(sum.re*h/3,sum.im*h/3);
+}
+
+function getWindow(choice,N){
+    const arr=[];
+    for(let n=0;n<N;n++){
+        let v;
+        if(choice===1)v=1;
+        if(choice===2)v=0.54-0.46*Math.cos(2*Math.PI*n/(N-1));
+        if(choice===3)v=0.5-0.5*Math.cos(2*Math.PI*n/(N-1));
+        if(choice===4)v=0.42-0.5*Math.cos(2*Math.PI*n/(N-1))
+                    +0.08*Math.cos(4*Math.PI*n/(N-1));
+        if(choice===5)v=1-Math.abs(2*n-(N-1))/(N-1);
+        arr.push(v);
+    }
+    return arr;
+}
+
+function fmt(x){
+    if(Math.abs(x)<1e-10)x=0;
+    return Number(x).toFixed(6).replace(/\.?0+$/,"");
+}
+
+function complexFmt(re,im){
+    if(Math.abs(im)<1e-8)return fmt(re);
+    if(Math.abs(re)<1e-8)return fmt(im)+"j";
+    return fmt(re)+(im>=0?"+":"")+fmt(im)+"j";
+}
+
+function calculate(){
+    const error=document.getElementById("error");
+    error.textContent="";
+    try{
+        const N=parseInt(document.getElementById("N").value);
+        if(!Number.isInteger(N)||N<2)throw new Error("N must be an integer ≥ 2.");
+
+        const rows=[...document.querySelectorAll(".piece")];
+        if(rows.length===0)throw new Error("Add at least one function piece.");
+
+        const alpha=(N-1)/2;
+        const pieces=rows.map(r=>{
+            const expr=r.querySelector(".expr").value.trim();
+            const range=r.querySelector(".range").value.trim();
+            const [lo,hi]=parseRange(range);
+            return {f:makeExpr(expr,alpha),lo,hi,expr,range};
+        });
+
+        const hd=[];
+        for(let n=0;n<N;n++){
+            let total=C(0,0);
+            for(const p of pieces){
+                const val=integrateComplex(w=>{
+                    const hdVal=p.f(w);
+                    const e=expC(C(0,w*n));
+                    return mul(hdVal,e);
+                },p.lo,p.hi);
+                total=add(total,val);
+            }
+            total=C(total.re/(2*Math.PI),total.im/(2*Math.PI));
+            hd.push(total);
+        }
+
+        const win=getWindow(parseInt(document.getElementById("window").value),N);
+        const h=hd.map((v,i)=>C(v.re*win[i],v.im*win[i]));
+
+        let html="<div class='table-wrap'><table><thead><tr><th>n</th><th>hd[n]</th><th>w[n]</th><th>h[n] = hd[n] × w[n]</th></tr></thead><tbody>";
+        for(let i=0;i<N;i++){
+            html+=`<tr><td>${i}</td><td>${complexFmt(hd[i].re,hd[i].im)}</td><td>${fmt(win[i])}</td><td>${complexFmt(h[i].re,h[i].im)}</td></tr>`;
+        }
+        html+="</tbody></table></div>";
+        document.getElementById("table").innerHTML=html;
+
+        let z="H(z) = ";
+        const terms=[];
+        for(let i=0;i<N;i++){
+            const val=h[i].re;
+            if(Math.abs(val)<1e-8)continue;
+            const body=(i===0?"":" z^-"+i);
+            if(terms.length===0)terms.push((val<0?"-":"")+fmt(Math.abs(val))+body);
+            else terms.push((val<0?" - ":" + ")+fmt(Math.abs(val))+body);
+        }
+        z+=terms.length?terms.join(""):"0";
+        document.getElementById("ztransform").textContent=z;
+
+        // Factor out z^-alpha, then pair z^k with z^-k (k = distance from the middle)
+        let center=0;
+        const pairs=[];
+        for(let n=0;n<N;n++){
+            const m=N-1-n;
+            if(n<m){
+                // h[n] multiplies z^(+k), h[m] multiplies z^(-k)
+                pairs.push({k:alpha-n, pos:h[n].re, neg:h[m].re});
+            }else if(n===m){
+                center=h[n].re;   // middle term (only when N is odd)
+            }
+        }
+
+        function term(c,body,first){
+            if(Math.abs(c)<1e-8)return "";
+            const sign=first?(c<0?"-":""):(c<0?" - ":" + ");
+            return sign+fmt(Math.abs(c))+body;
+        }
+
+        // Step 1: grouped z form
+        let zin="",zfirst=true;
+        let t=term(center,"",zfirst);
+        if(t){zin+=t;zfirst=false;}
+        for(const p of pairs){
+            t=term(p.pos," z^"+fmt(p.k),zfirst);
+            if(t){zin+=t;zfirst=false;}
+            t=term(p.neg," z^-"+fmt(p.k),zfirst);
+            if(t){zin+=t;zfirst=false;}
+        }
+        if(!zin)zin="0";
+
+        // Step 2: cos / sin form  (z = e^(jω))
+        // h[α-k]z^k + h[α+k]z^-k = (h[α-k]+h[α+k])cos(kω) + j(h[α-k]-h[α+k])sin(kω)
+        let cosPart="",cfirst=true;
+        t=term(center,"",cfirst);
+        if(t){cosPart+=t;cfirst=false;}
+        let sinPart="",sfirst=true;
+        for(const p of pairs){
+            t=term(p.pos+p.neg," cos("+fmt(p.k)+"ω)",cfirst);
+            if(t){cosPart+=t;cfirst=false;}
+            t=term(p.pos-p.neg," sin("+fmt(p.k)+"ω)",sfirst);
+            if(t){sinPart+=t;sfirst=false;}
+        }
+        if(!cosPart)cosPart="0";
+
+        let out=`H(z) = z^-${fmt(alpha)} [ ${zin} ]\n\n`+
+                `H(e^jω) = e^(-jω × ${fmt(alpha)}) [ ${cosPart}`;
+        if(sinPart)out+=`  +  j( ${sinPart} )`;
+        out+=` ]`;
+
+        document.getElementById("linearphase").textContent=out;
+
+        document.getElementById("results").style.display="block";
+        document.getElementById("results").scrollIntoView({behavior:"smooth"});
+    }catch(e){
+        error.textContent=e.message;
+        document.getElementById("results").style.display="none";
+    }
+}
+</script>
+</body>
+</html>
