@@ -122,6 +122,9 @@
         <h3>Z-transform</h3>
         <pre id="ztransform"></pre>
 
+        <h3>Inverse Fourier transform</h3>
+        <pre id="fouriertransform"></pre>
+
         <h3>Linear-phase form</h3>
         <pre id="linearphase"></pre>
     </div>
@@ -380,6 +383,61 @@ function calculate(){
         }
         z+=terms.length?terms.join(""):"0";
         document.getElementById("ztransform").textContent=z;
+
+        // Inverse Fourier transform: hd[n] = (1/2π) ∫ Hd(e^jω) e^(jωn) dω
+        // Closed form when every piece is A·exp(-j·w·d) (constant gain A, constant delay d) over [lo,hi]:
+        //   hd[n] = A [ sin(hi·m) - sin(lo·m) ] / (2π m),  m = n - d
+        //   hd[d] = A (hi - lo) / (2π)
+        function analyse(f){
+            // Detect f(w) = A*exp(-j*w*d) numerically
+            const w1=0.1, w2=0.101;
+            const f1=f(w1), f2=f(w2);
+            const r=mul(f2,C(f1.re,-f1.im));
+            const d=Math.round((-Math.atan2(r.im,r.re)/(w2-w1))*1e6)/1e6;
+            const c=mul(f1,expC(C(0,w1*d)));
+            if(Math.abs(c.im)>1e-6)return null;
+            for(const w of [-2.3,-0.7,0.4,1.3,2.9]){
+                const v=mul(f(w),expC(C(0,w*d)));
+                if(Math.abs(v.re-c.re)>1e-6||Math.abs(v.im)>1e-6)return null;
+            }
+            return {A:c.re,d:d};
+        }
+        let ift;
+        const info=pieces.map(p=>analyse(p.f));
+        if(info.every(x=>x&&Math.abs(x.d-info[0].d)<1e-6)){
+            const d=info[0].d;
+            const sinC={}, cosC={};
+            let centerVal=0;
+            pieces.forEach((p,i)=>{
+                const A=info[i].A;
+                for(const [x,sg] of [[p.hi,1],[p.lo,-1]]){
+                    const key=fmt(Math.abs(x)/Math.PI);
+                    sinC[key]=(sinC[key]||0)+A*sg*Math.sign(x);
+                    cosC[key]=(cosC[key]||0)-A*sg;
+                }
+                centerVal+=A*(p.hi-p.lo)/(2*Math.PI);
+            });
+            if(Object.values(cosC).every(v=>Math.abs(v)<1e-8)){
+                const m="(n-"+fmt(d)+")";
+                let inner="",first=true;
+                for(const key of Object.keys(sinC)){
+                    if(parseFloat(key)===0)continue;
+                    const c=sinC[key]/2;
+                    if(Math.abs(c)<1e-8)continue;
+                    const coef=Math.abs(c)===1?"":fmt(Math.abs(c))+" ";
+                    inner+=(first?(c<0?"-":""):(c<0?" - ":" + "))+coef+"sin("+key+"π"+m+")";
+                    first=false;
+                }
+                if(!inner)inner="0";
+                ift="hd[n] = [ "+inner+" ] / ( π"+m+" )    for n ≠ "+fmt(d);
+                if(Number.isInteger(d))ift+="\nhd["+fmt(d)+"] = "+fmt(centerVal);
+            }
+        }
+        if(!ift){
+            // No simple formula: list the computed hd[n] values instead
+            ift="hd[n] = (1/2π) ∫ Hd(e^jω) e^(jωn) dω\n"+hd.map((v,i)=>"hd["+i+"] = "+complexFmt(v.re,v.im)).join("\n");
+        }
+        document.getElementById("fouriertransform").textContent=ift;
 
         // Factor out z^-alpha, then pair z^k with z^-k (k = distance from the middle)
         let center=0;
